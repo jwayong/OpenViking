@@ -34,3 +34,5 @@ The installer is safe to re-run. It updates marker-managed shell snippets in pla
 openviking-copilot-mcp --check
 copilot
 ```
+
+For CLI and VS Code usage examples, see the step-by-step [local install and usage guide](../docs/local-install.md).

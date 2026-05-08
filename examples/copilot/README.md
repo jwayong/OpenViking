@@ -42,7 +42,7 @@ Current CLI support:
 bash <(curl -fsSL https://raw.githubusercontent.com/volcengine/OpenViking/main/examples/copilot/setup-helper/install.sh)
 ```
 
-The setup helper configures `~/.openviking/ovcli.conf`, builds or reuses a local VS Code `.vsix`, builds or reuses a local `@openviking/copilot-cli-memory` `.tgz`, merges the Copilot CLI user-level `mcp-config.json` entry, and can optionally add the `copilot()` shell wrapper. It does not require public VS Code Marketplace or npm publishing; see [`docs/local-install.md`](./docs/local-install.md).
+The setup helper configures `~/.openviking/ovcli.conf`, builds or reuses a local VS Code `.vsix`, builds or reuses a local `@openviking/copilot-cli-memory` `.tgz`, merges the Copilot CLI user-level `mcp-config.json` entry, and can optionally add the `copilot()` shell wrapper. It does not require public VS Code Marketplace or npm publishing; see the step-by-step [`local install and usage guide`](./docs/local-install.md).
 
 ## Quickstart (development)
 
