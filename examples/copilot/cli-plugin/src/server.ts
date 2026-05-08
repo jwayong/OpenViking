@@ -13,6 +13,7 @@ import {
   type OVResult,
   type OVTurn,
   type PluginConfig,
+  type RecallContextConfig,
   type RecallHit,
   type RecallOptions,
   type ReadOptions,
@@ -203,7 +204,7 @@ function fromOVResult<T>(res: OVResult<T>, format: (value: T) => string = jsonSt
   return { content: [{ type: "text", text: format(res.value) }] };
 }
 
-function recallConfig(cfg: OpenVikingToolDeps["config"]): Required<OpenVikingToolDeps>["config"] {
+function recallConfig(cfg: OpenVikingToolDeps["config"]): RecallContextConfig {
   return {
     autoRecall: cfg?.autoRecall ?? true,
     recallLimit: cfg?.recallLimit ?? 6,
