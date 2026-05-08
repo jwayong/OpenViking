@@ -8,9 +8,14 @@
 # Steps (each is idempotent — re-running is safe):
 #   1. Check OS (macOS / Linux only) and required baseline tools.
 #   2. Set up ~/.openviking/ovcli.conf — reuse if present, prompt otherwise.
-#   3. Clone (or refresh) the OpenViking repo to ~/.openviking/openviking-repo.
+#   3. Resolve a source repo: an explicit OPENVIKING_REPO_DIR, a local
+#      checkout detected from the script's own path, or a fresh clone
+#      under ~/.openviking/openviking-repo. The resolved checkout must
+#      contain examples/copilot/cli-plugin/.
 #   4. Optionally install the VS Code extension from a local .vsix.
-#   5. Install the Copilot CLI MCP server from a local .tgz and merge mcp-config.json.
+#   5. Install the Copilot CLI MCP server from a local .tgz, resolve
+#      the absolute path of the installed bin, and merge a working
+#      mcp-config.json entry pointing at that path.
 #   6. Optionally append the copilot() shell-wrapper fallback.
 #
 # Env overrides:
@@ -29,18 +34,55 @@
 set -euo pipefail
 
 OV_HOME="${OPENVIKING_HOME:-$HOME/.openviking}"
-REPO_DIR="${OPENVIKING_REPO_DIR:-$OV_HOME/openviking-repo}"
 REPO_URL="${OPENVIKING_REPO_URL:-https://github.com/volcengine/OpenViking.git}"
 REPO_BRANCH="${OPENVIKING_REPO_BRANCH:-main}"
 OVCLI_CONF="${OPENVIKING_CLI_CONFIG_FILE:-$OV_HOME/ovcli.conf}"
+ARTIFACT_DIR="${OPENVIKING_COPILOT_ARTIFACT_DIR:-$OV_HOME/copilot-artifacts}"
+INSTALL_SOURCE="${OPENVIKING_INSTALL_SOURCE:-local}"
+MARKER_BEGIN='# >>> openviking copilot memory plugin >>>'
+MARKER_END='# <<< openviking copilot memory plugin <<<'
+
+# If install.sh was run from a real on-disk path (e.g. `bash
+# examples/copilot/setup-helper/install.sh`) inside a checkout that
+# already contains the copilot example, use that checkout instead of
+# cloning a fresh copy. The curl-piped one-liner runs from /dev/fd/<n>,
+# in which case BASH_SOURCE will not resolve to a real file and we
+# fall through to the clone path.
+LOCAL_CHECKOUT=""
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+if [ -f "$SCRIPT_PATH" ]; then
+  if command -v realpath >/dev/null 2>&1; then
+    RESOLVED_SCRIPT_PATH=$(realpath "$SCRIPT_PATH" 2>/dev/null || echo "$SCRIPT_PATH")
+  else
+    RESOLVED_SCRIPT_PATH=$(cd "$(dirname "$SCRIPT_PATH")" 2>/dev/null && pwd)/"$(basename "$SCRIPT_PATH")"
+  fi
+  candidate=$(cd "$(dirname "$RESOLVED_SCRIPT_PATH")/../../.." 2>/dev/null && pwd || true)
+  if [ -n "$candidate" ] && [ -f "$candidate/examples/copilot/cli-plugin/package.json" ]; then
+    LOCAL_CHECKOUT="$candidate"
+  fi
+fi
+
+if [ -n "${OPENVIKING_REPO_DIR:-}" ]; then
+  REPO_DIR="$OPENVIKING_REPO_DIR"
+  REPO_SOURCE="explicit"
+elif [ -n "$LOCAL_CHECKOUT" ]; then
+  REPO_DIR="$LOCAL_CHECKOUT"
+  REPO_SOURCE="local-checkout"
+else
+  REPO_DIR="$OV_HOME/openviking-repo"
+  REPO_SOURCE="clone"
+fi
 COPILOT_DIR="$REPO_DIR/examples/copilot"
 VSCODE_EXT_DIR="$COPILOT_DIR/vscode-extension"
 CLI_PLUGIN_DIR="$COPILOT_DIR/cli-plugin"
-ARTIFACT_DIR="${OPENVIKING_COPILOT_ARTIFACT_DIR:-$OV_HOME/copilot-artifacts}"
-INSTALL_SOURCE="${OPENVIKING_INSTALL_SOURCE:-local}"
 WRAPPER_SRC="$CLI_PLUGIN_DIR/wrapper/copilot.sh"
-MARKER_BEGIN='# >>> openviking copilot memory plugin >>>'
-MARKER_END='# <<< openviking copilot memory plugin <<<'
+
+# Tracks the absolute path to a working `openviking-copilot-mcp` bin.
+# Filled in after install (or from a pre-existing global install) and
+# read by the mcp-config.json merge step. Empty means we have no
+# verified bin and must not write a config entry that would point
+# Copilot CLI at a missing executable.
+CLI_BIN_PATH=""
 
 if [ -t 1 ]; then
   CYAN=$'\033[0;36m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; RED=$'\033[0;31m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
@@ -202,26 +244,45 @@ if [ -z "$CURRENT_URL" ]; then
   info "Wrote $OVCLI_CONF (mode 0600)"
 fi
 
-# ----- 3. Clone / refresh repo -----
+# ----- 3. Source repository -----
 
 heading "3. OpenViking source repository ($REPO_DIR)"
 
-if [ -d "$REPO_DIR/.git" ]; then
-  info "Updating existing checkout"
-  git -C "$REPO_DIR" fetch --depth 1 origin "$REPO_BRANCH"
-  if git -C "$REPO_DIR" diff --quiet && git -C "$REPO_DIR" diff --cached --quiet; then
-    git -C "$REPO_DIR" checkout -B "$REPO_BRANCH" "FETCH_HEAD"
-  else
-    warn "$REPO_DIR has local changes; leaving checkout untouched after fetch."
-  fi
-else
-  if [ -e "$REPO_DIR" ]; then
-    err "$REPO_DIR exists but is not a git checkout. Move it aside or set OPENVIKING_REPO_DIR."
-    exit 1
-  fi
-  info "Cloning $REPO_URL (branch $REPO_BRANCH, depth 1)"
-  mkdir -p "$(dirname "$REPO_DIR")"
-  git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" "$REPO_DIR"
+case "$REPO_SOURCE" in
+  local-checkout)
+    info "Using local checkout detected from script path."
+    info "Set OPENVIKING_REPO_DIR to override."
+    ;;
+  explicit)
+    info "Using OPENVIKING_REPO_DIR=$REPO_DIR (no fetch/checkout)."
+    ;;
+  clone)
+    if [ -d "$REPO_DIR/.git" ]; then
+      info "Updating existing checkout"
+      git -C "$REPO_DIR" fetch --depth 1 origin "$REPO_BRANCH"
+      if git -C "$REPO_DIR" diff --quiet && git -C "$REPO_DIR" diff --cached --quiet; then
+        git -C "$REPO_DIR" checkout -B "$REPO_BRANCH" "FETCH_HEAD"
+      else
+        warn "$REPO_DIR has local changes; leaving checkout untouched after fetch."
+      fi
+    else
+      if [ -e "$REPO_DIR" ]; then
+        err "$REPO_DIR exists but is not a git checkout. Move it aside or set OPENVIKING_REPO_DIR."
+        exit 1
+      fi
+      info "Cloning $REPO_URL (branch $REPO_BRANCH, depth 1)"
+      mkdir -p "$(dirname "$REPO_DIR")"
+      git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" "$REPO_DIR"
+    fi
+    ;;
+esac
+
+if [ ! -f "$CLI_PLUGIN_DIR/package.json" ]; then
+  err "Copilot example missing at: $CLI_PLUGIN_DIR"
+  err "The cloned repo branch ($REPO_BRANCH) does not contain examples/copilot/."
+  err "Run install.sh from a local checkout that has examples/copilot/, or set"
+  err "OPENVIKING_REPO_DIR to such a checkout, or OPENVIKING_REPO_BRANCH to a branch that includes it."
+  exit 1
 fi
 
 # ----- 4. VS Code extension -----
@@ -315,13 +376,49 @@ pack_or_find_cli_package() {
   CLI_PACKAGE_TGZ="$found"
 }
 
+# Resolve the absolute path of an installed openviking-copilot-mcp,
+# preferring a binary already on PATH, falling back to npm's global
+# prefix. We write the absolute path into mcp-config.json so the
+# Copilot CLI doesn't depend on its own PATH at launch time (GUI-
+# launched apps and shells without nvm setup often don't see it).
+resolve_mcp_bin() {
+  CLI_BIN_PATH=""
+  local bin=""
+  if bin=$(command -v openviking-copilot-mcp 2>/dev/null) && [ -n "$bin" ]; then
+    CLI_BIN_PATH="$bin"
+    return 0
+  fi
+  if [ "$NPM_AVAILABLE" -eq 1 ]; then
+    local prefix=""
+    prefix=$(npm prefix -g 2>/dev/null || npm config get prefix 2>/dev/null || true)
+    if [ -n "$prefix" ] && [ -x "$prefix/bin/openviking-copilot-mcp" ]; then
+      CLI_BIN_PATH="$prefix/bin/openviking-copilot-mcp"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+if resolve_mcp_bin; then
+  info "Found existing openviking-copilot-mcp at $CLI_BIN_PATH"
+fi
+
 if [ "$NPM_AVAILABLE" -eq 1 ]; then
   case "$INSTALL_SOURCE" in
     local)
       if prompt_yes_no 'Install / update openviking-copilot-mcp globally from local .tgz?' 1; then
         if pack_or_find_cli_package; then
           info "Installing CLI MCP package: $CLI_PACKAGE_TGZ"
-          npm i -g "$CLI_PACKAGE_TGZ"
+          if npm i -g "$CLI_PACKAGE_TGZ"; then
+            if resolve_mcp_bin; then
+              info "Installed openviking-copilot-mcp at $CLI_BIN_PATH"
+            else
+              err "npm i -g succeeded but openviking-copilot-mcp not found in npm prefix."
+              err "Check 'npm prefix -g' and that its bin/ dir exists."
+            fi
+          else
+            err "npm i -g failed for $CLI_PACKAGE_TGZ"
+          fi
         else
           warn 'Skipped local CLI MCP package install.'
         fi
@@ -331,7 +428,15 @@ if [ "$NPM_AVAILABLE" -eq 1 ]; then
       ;;
     registry)
       if prompt_yes_no 'Install / update @openviking/copilot-cli-memory globally from npm registry?' 1; then
-        npm i -g @openviking/copilot-cli-memory
+        if npm i -g @openviking/copilot-cli-memory; then
+          if resolve_mcp_bin; then
+            info "Installed openviking-copilot-mcp at $CLI_BIN_PATH"
+          else
+            err "npm i -g succeeded but openviking-copilot-mcp not found in npm prefix."
+          fi
+        else
+          err "npm i -g @openviking/copilot-cli-memory failed."
+        fi
       else
         info 'Skipped npm registry install.'
       fi
@@ -345,6 +450,14 @@ else
   warn 'Skipped CLI MCP package install because npm is unavailable.'
 fi
 
+# Best-effort sanity check: ask the bin to print a redacted config
+# summary. Non-fatal: a non-zero exit just means OpenViking memory is
+# not enabled yet (e.g. missing API key for cloud), which is fine.
+if [ -n "$CLI_BIN_PATH" ]; then
+  info "Verifying bin: $CLI_BIN_PATH --check"
+  OPENVIKING_CLI_CONFIG_FILE="$OVCLI_CONF" "$CLI_BIN_PATH" --check || true
+fi
+
 COPILOT_HOME_DEFAULT="${COPILOT_HOME:-$HOME/.copilot}"
 DEFAULT_MCP_JSON="$COPILOT_HOME_DEFAULT/mcp-config.json"
 MCP_JSON="${COPILOT_MCP_JSON:-$DEFAULT_MCP_JSON}"
@@ -352,7 +465,10 @@ ask "Copilot CLI mcp-config.json path [$MCP_JSON]: "
 read -r MCP_INPUT || MCP_INPUT=""
 MCP_JSON="${MCP_INPUT:-$MCP_JSON}"
 
-if prompt_yes_no 'Merge OpenViking MCP server entry into this mcp-config.json?' 1; then
+if [ -z "$CLI_BIN_PATH" ]; then
+  warn 'No working openviking-copilot-mcp binary; skipping mcp-config.json merge.'
+  warn 'Install the CLI plugin first, then re-run this installer.'
+elif prompt_yes_no 'Merge OpenViking MCP server entry into this mcp-config.json?' 1; then
   mkdir -p "$(dirname "$MCP_JSON")"
   if [ -f "$MCP_JSON" ]; then
     backup_file "$MCP_JSON"
@@ -366,11 +482,11 @@ if prompt_yes_no 'Merge OpenViking MCP server entry into this mcp-config.json?' 
     input_json="$tmp.empty"
     printf '{}\n' > "$input_json"
   fi
-  if ! jq --arg conf "$OVCLI_CONF" '
+  if ! jq --arg conf "$OVCLI_CONF" --arg bin "$CLI_BIN_PATH" '
       .mcpServers = (.mcpServers // {}) |
       .mcpServers.openviking = {
         type: "local",
-        command: "openviking-copilot-mcp",
+        command: $bin,
         args: [],
         env: {
           OPENVIKING_MEMORY_ENABLED: "true",
@@ -386,6 +502,7 @@ if prompt_yes_no 'Merge OpenViking MCP server entry into this mcp-config.json?' 
   mv "$tmp" "$MCP_JSON"
   [ "${input_json:-}" != "$MCP_JSON" ] && rm -f "${input_json:-}"
   info "Merged OpenViking MCP server into $MCP_JSON"
+  info "  command = $CLI_BIN_PATH"
 else
   info 'Skipped mcp-config.json merge.'
 fi

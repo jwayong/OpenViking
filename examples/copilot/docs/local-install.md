@@ -1,146 +1,228 @@
-# Local Copilot plugin install and usage
+# Install the OpenViking memory plugin for GitHub Copilot
 
-Issue: <https://github.com/jwayong/OpenViking/issues/39>
+A step-by-step guide. The same MCP server backs both the **GitHub Copilot CLI** and the **VS Code Copilot Chat** extension; pick whichever target you want and follow the matching steps.
 
-This guide installs and uses the OpenViking Copilot memory plugins from this repo or from local artifacts. It does not require the VS Code Marketplace or the public npm registry for the OpenViking plugin packages.
+## What you'll end up with
 
-## What gets installed
-
-| Target | Installed artifact | User-facing entry point |
+| Target | Installed artifact | Where it lives |
 | --- | --- | --- |
-| GitHub Copilot CLI | local `@openviking/copilot-cli-memory` `.tgz` | `openviking-copilot-mcp` MCP server mounted in `~/.copilot/mcp-config.json` |
-| VS Code Copilot Chat | local `openviking-copilot.vsix` | `@openviking` chat participant, `openviking_recall` language-model tool, and OpenViking settings |
+| GitHub Copilot CLI | npm-global bin `openviking-copilot-mcp` | mounted via `~/.copilot/mcp-config.json` |
+| VS Code Copilot Chat | `openviking-copilot.vsix` | `@openviking` chat participant + `openviking_recall` language-model tool |
+
+Both targets read OpenViking server settings from `~/.openviking/ovcli.conf`.
 
 ## Prerequisites
 
-1. macOS or Linux.
-2. `git`, `jq`, and `curl` on `PATH`.
-3. Node.js/npm. Node `>=22` is expected by the Copilot workspaces.
-4. An OpenViking server URL plus any account/user/API-key values your server requires.
-5. For CLI use: the agentic GitHub Copilot CLI executable named `copilot`.
-6. For VS Code use: VS Code `>=1.99`, GitHub Copilot Chat enabled, and the `code` CLI on `PATH`.
+- macOS or Linux
+- `git`, `jq`, `curl` on `PATH`
+- Node.js >= 22 with `npm`
+- A reachable OpenViking server (local self-hosted, or Volcengine OpenViking Cloud + API key)
+- For CLI use: the agentic `copilot` CLI installed and logged in (`npm i -g @github/copilot && copilot`)
+- For VS Code use: VS Code >= 1.99 with GitHub Copilot Chat enabled, and the `code` CLI on `PATH`
 
-## Step 1: start from a local checkout
+## Quick path: run the installer
+
+From a checkout of this repo:
 
 ```bash
 cd /path/to/OpenViking
-git checkout feature/copilot-memory-plugin-plan
-```
-
-If you are installing from a branch that has not landed on `main` yet, run the helper from your local checkout instead of using the raw GitHub one-liner.
-
-## Step 2: run the setup helper
-
-```bash
 bash examples/copilot/setup-helper/install.sh
 ```
 
-The helper defaults to `OPENVIKING_INSTALL_SOURCE=local` and is safe to re-run. It backs up changed config files with `.bak.YYYYMMDD-HHMMSS`.
+The installer auto-detects that it's running from a local checkout and uses that source — no clone needed. It is safe to re-run; existing config files are backed up as `<file>.bak.YYYYMMDD-HHMMSS`.
 
-When prompted:
+What the installer does, in order:
 
-1. Enter the OpenViking URL, API key, account, user, and agent id. The default agent id is `copilot-cli` for the CLI path.
-2. Let the helper reuse or refresh the local repo checkout.
-3. Choose `Y` for VS Code extension install if `code` is available and you want the VS Code plugin.
-4. Choose `Y` for CLI package install to pack and install a local `.tgz`.
-5. Accept or edit the Copilot CLI `mcp-config.json` path. The default is `${COPILOT_HOME:-$HOME/.copilot}/mcp-config.json`.
-6. Choose whether to add the optional `copilot()` shell wrapper. The wrapper only flushes captures the model already made; it cannot capture turns the model never sent to `openviking_capture`.
+1. Checks OS + required CLIs (`git`, `jq`, `curl`, optionally `npm`/`code`).
+2. Creates or reuses `~/.openviking/ovcli.conf` (URL, API key, account, user, agent id).
+3. Resolves the source repo (local checkout > `OPENVIKING_REPO_DIR` > clone of `volcengine/OpenViking`).
+4. Optional: packages a `.vsix` and installs the VS Code extension.
+5. Packs `@openviking/copilot-cli-memory` into a local `.tgz`, runs `npm i -g <tgz>`, resolves the **absolute path** of the installed `openviking-copilot-mcp` binary, runs `--check` to verify, then merges that absolute path into `~/.copilot/mcp-config.json`.
+6. Optional: appends a `copilot()` shell wrapper that flushes pending captures at end-of-session.
 
-The helper creates or reuses artifacts in `${OPENVIKING_HOME:-$HOME/.openviking}/copilot-artifacts` unless `OPENVIKING_COPILOT_ARTIFACT_DIR` is set.
+If the binary install fails for any reason, the installer **does not** write a broken `mcp-config.json` entry — it warns and skips the merge. Re-run after fixing the install.
 
-## Step 3: validate the install
+Skip ahead to [Step 6: validate](#step-6-validate-the-install) when the script finishes, or follow the manual steps below.
+
+---
+
+## Manual install — Copilot CLI (MCP server)
+
+### Step 1: configure OpenViking
+
+```bash
+mkdir -p ~/.openviking && chmod 700 ~/.openviking
+cat > ~/.openviking/ovcli.conf <<'JSON'
+{
+  "url": "http://127.0.0.1:1933",
+  "api_key": "",
+  "account": "",
+  "user": "",
+  "agent_id": "copilot-cli"
+}
+JSON
+chmod 600 ~/.openviking/ovcli.conf
+```
+
+For Volcengine OpenViking Cloud, set `url` to `https://api.vikingdb.cn-beijing.volces.com/openviking` and put your API key in `api_key`.
+
+### Step 2: build and install the MCP server
+
+From this repo:
+
+```bash
+cd examples/copilot
+npm install
+npm pack -w @openviking/copilot-cli-memory --pack-destination /tmp
+npm i -g /tmp/openviking-copilot-cli-memory-*.tgz
+```
+
+Verify the bin landed on `PATH` and the config is wired up:
+
+```bash
+which openviking-copilot-mcp
+openviking-copilot-mcp --check
+```
+
+`--check` should exit `0` and print `enabled : true` along with a redacted config summary.
+
+### Step 3: register it with the Copilot CLI
+
+Resolve the absolute path of the bin and write it into `~/.copilot/mcp-config.json`. Using the absolute path (not just `openviking-copilot-mcp`) avoids `PATH` issues when the Copilot CLI spawns the server from a non-login shell.
+
+```bash
+mkdir -p ~/.copilot
+BIN=$(command -v openviking-copilot-mcp)
+[ -x "$BIN" ] || { echo "openviking-copilot-mcp not on PATH"; exit 1; }
+
+tmp=$(mktemp)
+jq --arg bin "$BIN" --arg conf "$HOME/.openviking/ovcli.conf" '
+  .mcpServers = (.mcpServers // {}) |
+  .mcpServers.openviking = {
+    type: "local",
+    command: $bin,
+    args: [],
+    env: {
+      OPENVIKING_MEMORY_ENABLED: "true",
+      OPENVIKING_CLI_CONFIG_FILE: $conf
+    },
+    tools: ["*"]
+  }
+' "${HOME}/.copilot/mcp-config.json" 2>/dev/null \
+  || jq --arg bin "$BIN" --arg conf "$HOME/.openviking/ovcli.conf" -n '
+    {mcpServers: {openviking: {
+      type: "local",
+      command: $bin,
+      args: [],
+      env: {OPENVIKING_MEMORY_ENABLED: "true", OPENVIKING_CLI_CONFIG_FILE: $conf},
+      tools: ["*"]
+    }}}' \
+  > "$tmp"
+mv "$tmp" ~/.copilot/mcp-config.json
+```
+
+The resulting entry looks like:
+
+```json
+{
+  "mcpServers": {
+    "openviking": {
+      "type": "local",
+      "command": "/Users/you/.npm-global/bin/openviking-copilot-mcp",
+      "args": [],
+      "env": {
+        "OPENVIKING_MEMORY_ENABLED": "true",
+        "OPENVIKING_CLI_CONFIG_FILE": "/Users/you/.openviking/ovcli.conf"
+      },
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+### Step 4: use it
+
+```bash
+copilot
+```
+
+Inside Copilot CLI, ask a question; the model can call the `openviking_recall` MCP tool to retrieve a ranked `<openviking-context>` block, and `openviking_capture` with `{user, assistant}` to commit useful turns. Capture is model-discretion based — recall always works, capture happens when the model decides to call the tool.
+
+---
+
+## Manual install — VS Code extension
+
+### Step 1: configure OpenViking
+
+Same as Step 1 above. The extension reads the same `~/.openviking/ovcli.conf`. If you'd rather not put the API key in the file, leave `api_key` empty and run `OpenViking: Set API Key` from the VS Code command palette to store it in SecretStorage.
+
+### Step 2: package the extension
+
+```bash
+cd examples/copilot
+npm install
+npm run build -w openviking-copilot
+cd vscode-extension
+npx vsce package --no-dependencies --skip-license --out openviking-copilot.vsix
+```
+
+### Step 3: install it
+
+```bash
+code --install-extension openviking-copilot.vsix --force
+code --list-extensions | grep -i openviking   # sanity check
+```
+
+### Step 4: use it
+
+Open VS Code on a project, open Copilot Chat, then either ask a normal question (the `openviking_recall` language-model tool can fire automatically) or address the participant directly:
+
+```text
+@openviking /recall Copilot install flow
+@openviking /store This repo uses local .vsix and .tgz artifacts.
+@openviking Explain the local-first plugin install path.
+```
+
+Completed `@openviking` participant turns are captured to OpenViking when `openviking.autoCapture` is enabled. Default `@workspace` turn capture isn't supported — VS Code 1.99 doesn't expose a turn-level event for default chat.
+
+---
+
+## Step 6: validate the install
 
 ```bash
 openviking-copilot-mcp --check
 ```
 
-Expected result: a redacted config summary showing the resolved OpenViking URL, account, user, agent id, and enabled status.
+Expect `enabled : true` and a redacted summary showing `baseUrl`, `agentId`, etc.
 
-For VS Code, also check that the extension is installed:
+```bash
+cat ~/.copilot/mcp-config.json | jq '.mcpServers.openviking'
+```
+
+Expect `command` to be an absolute path to a real file, and `env.OPENVIKING_CLI_CONFIG_FILE` to point at your `ovcli.conf`.
+
+For the VS Code extension:
 
 ```bash
 code --list-extensions | grep -i openviking
 ```
 
-If you enabled the shell wrapper, reload your shell before using `copilot`:
+---
 
-```bash
-source ~/.zshrc  # or ~/.bashrc
-```
+## Optional: copilot() shell wrapper
 
-## Step 4: use memory from the Copilot CLI
+The installer can append a `copilot()` zsh/bash function that runs the regular `copilot` CLI and then calls `openviking-copilot-mcp --commit-flush` at exit, so any pending captures the model made via `openviking_capture` get committed even if no token-threshold trigger fired during the session. This only flushes captures the model already requested — it cannot capture turns the model never sent to the tool.
 
-1. Start the Copilot CLI from a project directory:
+To enable later, re-run the installer and answer **Y** at the wrapper prompt, or `source examples/copilot/cli-plugin/wrapper/copilot.sh` from your shell rc.
 
-   ```bash
-   copilot
-   ```
-
-2. Ask a question that may need remembered project context, for example:
-
-   ```text
-   Use OpenViking memory if relevant. What did we decide about the Copilot local install flow?
-   ```
-
-3. The model can call `openviking_recall` to retrieve a ranked `<openviking-context>` block before answering.
-
-4. At the end of useful turns, the model is asked to call `openviking_capture` with `{ user, assistant }` so the turn can be stored. This is model-discretion based: recall is available, but capture is not guaranteed if the model declines or forgets to call the tool.
-
-5. Optional debug checks outside the Copilot CLI:
-
-   ```bash
-   openviking-copilot-mcp --debug-recall="Copilot local install flow"
-   ```
-
-   ```bash
-   mkdir -p "$HOME/.openviking"
-   cat > "$HOME/.openviking/copilot-turn.json" <<'JSON'
-   [
-     {"role":"user","text":"Remember that this repo uses local .vsix and .tgz installs for Copilot plugins."},
-     {"role":"assistant","text":"Noted. The local-first Copilot install avoids Marketplace and npm publishing."}
-   ]
-   JSON
-   openviking-copilot-mcp --debug-capture="$HOME/.openviking/copilot-turn.json"
-   ```
-
-## Step 5: use memory from VS Code Copilot Chat
-
-1. Open VS Code from a project directory:
-
-   ```bash
-   code /path/to/project
-   ```
-
-2. If the API key was not configured by `~/.openviking/ovcli.conf`, run the command palette action `OpenViking: Set API Key`. This stores the key in VS Code SecretStorage.
-
-3. Open Copilot Chat and ask a normal question. The installed `openviking_recall` language-model tool can retrieve relevant OpenViking memory for default chat turns.
-
-4. Use the participant directly when you want explicit OpenViking memory behavior:
-
-   ```text
-   @openviking /recall Copilot local install flow
-   ```
-
-   ```text
-   @openviking /store This repo should use local .vsix and .tgz artifacts for Copilot plugin installs.
-   ```
-
-   ```text
-   @openviking Explain the current local-first plugin install path.
-   ```
-
-5. Completed `@openviking` participant turns are captured into OpenViking when `openviking.autoCapture` is enabled. Stable VS Code 1.99 APIs do not expose default `@workspace` response events to extensions, so default-chat capture is not currently supported.
-
-## Reuse prebuilt local artifacts
-
-Build artifacts once and reuse them across machines:
+## Reusable artifacts
 
 ```bash
 OPENVIKING_COPILOT_ARTIFACT_DIR=$PWD/.openviking-artifacts \
   bash examples/copilot/setup-helper/install.sh
 ```
 
-Then install from explicit local files:
+Then on another machine:
 
 ```bash
 OPENVIKING_COPILOT_VSIX=/path/to/openviking-copilot.vsix \
@@ -148,22 +230,11 @@ OPENVIKING_COPILOT_CLI_TGZ=/path/to/openviking-copilot-cli-memory-0.0.0.tgz \
   bash examples/copilot/setup-helper/install.sh
 ```
 
-## Optional registry mode
-
-Public publishing is tracked separately in #31 and #32. If a future private or public registry is available, opt into registry install explicitly:
-
-```bash
-OPENVIKING_INSTALL_SOURCE=registry bash examples/copilot/setup-helper/install.sh
-```
-
-## Private extension galleries
-
-Standard Microsoft VS Code users should use `.vsix` install for local/private testing. Custom extension galleries require a host that supports overriding `extensionsGallery` (for example an Open VSX-compatible gallery in OSS/VSCodium-style builds), so this repo does not depend on that path for local installs.
-
 ## Troubleshooting
 
-- `openviking-copilot-mcp --check` exits non-zero: verify `~/.openviking/ovcli.conf` or the `OPENVIKING_*` environment variables.
-- `code --list-extensions` does not show OpenViking: confirm the `code` CLI is on `PATH`, then re-run the helper and accept VS Code installation.
-- Copilot CLI does not show OpenViking tools: inspect `${COPILOT_HOME:-$HOME/.copilot}/mcp-config.json` and confirm it contains the `openviking` server entry with command `openviking-copilot-mcp`.
-- CLI capture did not happen: ask the model to call `openviking_capture`, or use the optional shell wrapper to force-flush pending captured turns at process exit.
-- VS Code default chat is not captured: use `@openviking` participant turns for capture until VS Code exposes a default-chat turn event.
+- **`openviking-copilot-mcp: command not found`** — `npm i -g <tgz>` didn't put the bin in your `PATH`. Check `npm prefix -g` and ensure its `bin/` is on `PATH` (commonly `~/.npm-global/bin`).
+- **Copilot CLI doesn't list OpenViking tools** — open `~/.copilot/mcp-config.json` and confirm `mcpServers.openviking.command` points at an existing executable. The installer writes an absolute path; a relative `openviking-copilot-mcp` only works if the Copilot CLI's spawn environment also has the bin on `PATH`.
+- **`--check` exits non-zero** — `enabled` is `false`. Verify `~/.openviking/ovcli.conf` (or `OPENVIKING_*` env vars) and that `OPENVIKING_MEMORY_ENABLED` is not explicitly `false`.
+- **Installer says `Copilot example missing at ...`** — your source checkout doesn't include `examples/copilot/cli-plugin/`. Run from a checkout that does, or set `OPENVIKING_REPO_DIR` to one. The default clone is `volcengine/OpenViking` `main`; until this PR lands there, use a local checkout.
+- **VS Code default-chat turns don't get captured** — expected. Use `@openviking` participant turns for capture, or rely on recall-only for default chat.
+- **CLI capture didn't happen for a turn** — capture is model-discretion. Ask the model to call `openviking_capture`, or enable the `copilot()` shell wrapper to flush pending captures at exit.
